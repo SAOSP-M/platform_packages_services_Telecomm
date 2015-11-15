@@ -256,12 +256,12 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
                     new DisconnectCause(android.telephony.DisconnectCause.CALL_BLACKLISTED));
         } else {
             setCallState(incomingCall, CallState.RINGING, "ringing set explicitly");
-            if (hasMaximumRingingCalls(incomingCall.getTargetPhoneAccount().getId())) {
-                incomingCall.reject(false, null);
-                // since the call was not added to the list of calls, we have to call the missed
-                // call notifier and the call logger manually.
-                mMissedCallNotifier.showMissedCallNotification(incomingCall);
-                mCallLogManager.logCall(incomingCall, Calls.MISSED_TYPE);
+            if (hasMaximumRingingCalls() || hasMaximumDialingCalls()) {
+            incomingCall.reject(false, null);
+            // since the call was not added to the list of calls, we have to call the missed
+            // call notifier and the call logger manually.
+            mMissedCallNotifier.showMissedCallNotification(incomingCall);
+            mCallLogManager.logCall(incomingCall, Calls.MISSED_TYPE);
             } else {
                 addCall(incomingCall);
             }

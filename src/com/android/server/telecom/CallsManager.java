@@ -24,6 +24,7 @@ import android.os.Looper;
 import android.os.SystemProperties;
 import android.os.Trace;
 import android.provider.CallLog.Calls;
+import android.provider.Settings;
 import android.telecom.CallAudioState;
 import android.telecom.Conference;
 import android.telecom.Connection;
@@ -84,6 +85,7 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
         void onVideoStateChanged(Call call);
         void onCanAddCallChanged(boolean canAddCall);
         void onSessionModifyRequestReceived(Call call, VideoProfile videoProfile);
+        void onHoldToneRequested(Call call);
     }
 
     private static final String TAG = "CallsManager";
@@ -426,6 +428,21 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
         }
     }
 
+    /**
+     * Play or stop a call hold tone for a call.  Triggered via
+     * {@link Connection#sendConnectionEvent(String)} when the
+     * {@link Connection#EVENT_ON_HOLD_TONE_START} event or
+     * {@link Connection#EVENT_ON_HOLD_TONE_STOP} event is passed through to the
+     *
+     * @param call The call which requested the hold tone.
+     */
+    @Override
+    public void onHoldToneRequested(Call call) {
+        for (CallsManagerListener listener : mListeners) {
+            listener.onHoldToneRequested(call);
+        }
+    }
+
     Collection<Call> getCalls() {
         return Collections.unmodifiableCollection(mCalls);
     }
@@ -724,17 +741,32 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
         } else {
             Log.i(this, "%s Starting with speakerphone because car is docked.", call);
         }
-        call.setStartWithSpeakerphoneOn(speakerphoneOn || mDockManager.isDocked());
+
+        final boolean useSpeakerWhenDocked = mContext.getResources().getBoolean(
+                R.bool.use_speaker_when_docked);
+
+        call.setStartWithSpeakerphoneOn(speakerphoneOn
+                || (useSpeakerWhenDocked && mDockManager.isDocked()));
 
         if (call.isEmergencyCall()) {
             // Emergency -- CreateConnectionProcessor will choose accounts automatically
             call.setTargetPhoneAccount(null);
         }
 
+        final boolean requireCallCapableAccountByHandle = mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_requireCallCapableAccountForHandle);
+
         if (call.getTargetPhoneAccount() != null || call.isEmergencyCall()) {
             // If the account has been set, proceed to place the outgoing call.
             // Otherwise the connection will be initiated when the account is set by the user.
             call.startCreateConnection(mPhoneAccountRegistrar);
+        } else if (mPhoneAccountRegistrar.getCallCapablePhoneAccounts(
+                requireCallCapableAccountByHandle ? call.getHandle().getScheme() : null, false)
+                .isEmpty()) {
+            // If there are no call capable accounts, disconnect the call.
+            markCallAsDisconnected(call, new DisconnectCause(DisconnectCause.CANCELED,
+                    "No registered PhoneAccounts"));
+            markCallAsRemoved(call);
         }
     }
 
@@ -1089,6 +1121,13 @@ public class CallsManager extends Call.ListenerBase implements VideoProviderProx
      * Returns true if telecom supports adding another top-level call.
      */
     boolean canAddCall() {
+        boolean isDeviceProvisioned = Settings.Global.getInt(mContext.getContentResolver(),
+                Settings.Global.DEVICE_PROVISIONED, 0) != 0;
+        if (!isDeviceProvisioned) {
+            Log.d(TAG, "Device not provisioned, canAddCall is false.");
+            return false;
+        }
+
         if (getFirstCallWithState(OUTGOING_CALL_STATES) != null) {
             return false;
         }

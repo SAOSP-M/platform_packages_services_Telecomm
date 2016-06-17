@@ -48,6 +48,7 @@ import com.android.internal.telephony.SmsApplication;
 import com.android.server.telecom.ContactsAsyncHelper.OnImageLoadCompleteListener;
 import com.android.internal.util.Preconditions;
 
+import java.lang.String;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -94,6 +95,7 @@ public class Call implements CreateConnectionResponse {
         void onPhoneAccountChanged(Call call);
         void onConferenceableCallsChanged(Call call);
         boolean onCanceledViaNewOutgoingCallBroadcast(Call call);
+        void onHoldToneRequested(Call call);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -151,6 +153,9 @@ public class Call implements CreateConnectionResponse {
         public boolean onCanceledViaNewOutgoingCallBroadcast(Call call) {
             return false;
         }
+
+        @Override
+        public void onHoldToneRequested(Call call) {}
     }
 
     private final OnQueryCompleteListener mCallerInfoQueryListener =
@@ -329,6 +334,13 @@ public class Call implements CreateConnectionResponse {
     private Call mConferenceLevelActiveCall = null;
 
     private boolean mIsLocallyDisconnecting = false;
+
+    /**
+     * Indicates whether the call is remotely held.  A call is considered remotely held when
+     * {@link #onConnectionEvent(String)} receives the {@link Connection#EVENT_ON_HOLD_TONE_START}
+     * event.
+     */
+    private boolean mIsRemotelyHeld = false;
 
     /**
      * Persists the specified parameters and initializes the new instance.
@@ -675,6 +687,9 @@ public class Call implements CreateConnectionResponse {
         }
         return mHandle == null ? null : mHandle.getSchemeSpecificPart();
     }
+    public String getPhoneNumber() {
+        return mCallerInfo == null ? null : mCallerInfo.phoneNumber;
+    }
 
     public Bitmap getPhotoIcon() {
         return mCallerInfo == null ? null : mCallerInfo.cachedPhotoIcon;
@@ -995,6 +1010,19 @@ public class Call implements CreateConnectionResponse {
         }
     }
 
+    /**
+     * Silences the ringer.
+     */
+    void silence() {
+        if (mConnectionService == null) {
+            Log.w(this, "silence() request on a call without a connection service.");
+        } else {
+            Log.i(this, "Send silence to connection service for call %s", this);
+            Log.event(this, Log.Events.SILENCE);
+            mConnectionService.silence(this);
+        }
+    }
+
     void disconnect() {
         disconnect(false);
     }
@@ -1093,7 +1121,7 @@ public class Call implements CreateConnectionResponse {
             // Ensure video state history tracks video state at time of rejection.
             mVideoStateHistory |= mVideoState;
 
-            mConnectionService.reject(this);
+            mConnectionService.reject(this, rejectWithMessage, textMessage);
             Log.event(this, Log.Events.REQUEST_REJECT);
         }
     }
@@ -1682,5 +1710,35 @@ public class Call implements CreateConnectionResponse {
      */
     public boolean isDisconnected() {
         return (getState() == CallState.DISCONNECTED || getState() == CallState.ABORTED);
+    }
+
+    /**
+     * Determines if the call has been held by the remote party.
+     *
+     * @return {@code true} if the call is remotely held, {@code false} otherwise.
+     */
+    public boolean isRemotelyHeld() {
+        return mIsRemotelyHeld;
+    }
+
+    /**
+     * Handles Connection events received from a {@link ConnectionService}.
+     *
+     * @param event The event.
+     */
+    public void onConnectionEvent(String event) {
+        if (Connection.EVENT_ON_HOLD_TONE_START.equals(event)) {
+            mIsRemotelyHeld = true;
+            // Inform listeners of the fact that a call hold tone was received.  This will trigger
+            // the CallsManager to inform the InCallToneMonitor of the request.
+            for (Listener l : mListeners) {
+                l.onHoldToneRequested(this);
+            }
+        } else if (Connection.EVENT_ON_HOLD_TONE_END.equals(event)) {
+            mIsRemotelyHeld = false;
+            for (Listener l : mListeners) {
+                l.onHoldToneRequested(this);
+            }
+        }
     }
 }
